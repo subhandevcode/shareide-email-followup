@@ -1,0 +1,372 @@
+{
+  "name": "ShareIDE - Email Follow-up System",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "minutes", "minutesInterval": 2 }] }
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000001",
+      "name": "Check Every 2 Min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-600, -300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://172.17.0.1:3789/check",
+        "options": {}
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000060",
+      "name": "Check Sent Folder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-350, -300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nconst emails = response.emails || [];\nif (emails.length === 0) return [{json:{to_email:'',skip:true}}];\nconst results = [];\nconst emailRegex = /[\\w.+-]+@[\\w.-]+\\.[a-zA-Z]{2,}/g;\nfor (const em of emails) {\n  const toEmails = (em.to || '').match(emailRegex) || [];\n  for (const email of toEmails) {\n    results.push({\n      json: {\n        to_email: email.toLowerCase().trim(),\n        subject: em.subject || '',\n        body: em.body || '',\n        sent_date: new Date(new Date().getTime() + 5*60*60*1000).toISOString().split('T')[0]\n      }\n    });\n  }\n}\nif (results.length === 0) return [{json:{to_email:'',skip:true}}];\nreturn results;"
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000002",
+      "name": "Extract Sent Details",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-100, -300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/18yisXx5I2xmdFvxe_RjeNf1etsIRIKj0Edt6yrYV9t4/values:batchGet?ranges=Corporate%20Outreach%20Data%20Directory!A1:I200&ranges=Non%20Profit%20Organizations!A1:F200&ranges=Universities!A1:F200&ranges=Colleges!A1:G200",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {}
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000050",
+      "name": "Read All Tabs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [150, -300],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "Dg9ttRjALo8L7JFh", "name": "Google Sheets account 4" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const sentEmail = $('Extract Sent Details').first().json;\nif (sentEmail.skip) return [{json:{found:false}}];\nconst targetEmail = sentEmail.to_email;\nconst emailRegex = /[\\w.+-]+@[\\w.-]+\\.[a-zA-Z]{2,}/g;\nconst allTabs = $('Read All Tabs').first().json;\nconst ranges = allTabs.valueRanges || [];\n\nfunction parseTab(values) {\n  if (!values || values.length < 2) return [];\n  const h = values[0].map(c => c.trim());\n  return values.slice(1).map(row => {\n    const obj = {};\n    h.forEach((col, i) => { obj[col] = (row[i] || '').trim(); });\n    return obj;\n  });\n}\n\nfunction findEmail(rows, nameCol, companyCol, emailCols, tab) {\n  for (const d of rows) {\n    const allEmails = [];\n    for (const col of emailCols) {\n      if (d[col]) {\n        const found = d[col].toString().match(emailRegex) || [];\n        allEmails.push(...found.map(e => e.toLowerCase().trim()));\n      }\n    }\n    if (allEmails.includes(targetEmail)) {\n      return { contact_name: d[nameCol] || 'Contact', company: d[companyCol] || '', tab };\n    }\n  }\n  return null;\n}\n\nlet matched = null;\nif (ranges[0] && ranges[0].values) {\n  matched = findEmail(parseTab(ranges[0].values), 'Chief People Officer (CPO) / HR Head', 'Company Name', ['CPO/HR Email', 'Admin Email', 'CPO/HR Generic Email', 'Admin Generic Email'], 'Corporate');\n}\nif (!matched && ranges[1] && ranges[1].values) {\n  matched = findEmail(parseTab(ranges[1].values), 'Chief People Officer (CPO) / HR Head', 'Organization Name', ['CPO/HR Email', 'Admin Email'], 'Non Profit');\n}\nif (!matched && ranges[2] && ranges[2].values) {\n  matched = findEmail(parseTab(ranges[2].values), 'Names', 'Names', ['HR', 'Admin', 'Contact'], 'Universities');\n}\nif (!matched && ranges[3] && ranges[3].values) {\n  matched = findEmail(parseTab(ranges[3].values), 'Chief People Officer (CPO) / HR Head', 'School/College Name', ['CPO/HR Email', 'Admin Email'], 'Colleges');\n}\n\nif (matched) {\n  return [{json:{\n    found:true, email:targetEmail, contact_name:matched.contact_name,\n    company:matched.company, subject:sentEmail.subject,\n    body_preview:sentEmail.body.substring(0,500), sent_date:sentEmail.sent_date,\n    follow_up_count:'0', last_followup_date:sentEmail.sent_date,\n    reply_status:'No', status:'Active', source_tab:matched.tab\n  }}];\n}\nreturn [{json:{found:false}}];"
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000004",
+      "name": "Match All Tabs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, -300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "id": "match-found", "leftValue": "={{ $json.found }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals", "name": "filter.boolean.equals" } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000005",
+      "name": "In Sheet?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [650, -300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "__rl": true, "value": "18yisXx5I2xmdFvxe_RjeNf1etsIRIKj0Edt6yrYV9t4", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "Follow-up Tracker", "mode": "name" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Email": "={{ $json.email }}", "Contact Name": "={{ $json.contact_name }}", "Company": "={{ $json.company }}",
+            "Subject": "={{ $json.subject }}", "Body Preview": "={{ $json.body_preview }}", "Sent Date": "={{ $json.sent_date }}",
+            "Follow-up Count": "={{ $json.follow_up_count }}", "Last Follow-up Date": "={{ $json.last_followup_date }}",
+            "Reply Status": "={{ $json.reply_status }}", "Status": "={{ $json.status }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {"id": "Email", "displayName": "Email", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true},
+            {"id": "Contact Name", "displayName": "Contact Name", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false},
+            {"id": "Company", "displayName": "Company", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false},
+            {"id": "Subject", "displayName": "Subject", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false},
+            {"id": "Body Preview", "displayName": "Body Preview", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false},
+            {"id": "Sent Date", "displayName": "Sent Date", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false},
+            {"id": "Follow-up Count", "displayName": "Follow-up Count", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false},
+            {"id": "Last Follow-up Date", "displayName": "Last Follow-up Date", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false},
+            {"id": "Reply Status", "displayName": "Reply Status", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false},
+            {"id": "Status", "displayName": "Status", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false}
+          ]
+        },
+        "options": {}
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000006",
+      "name": "Add to Tracker",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [900, -400],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "Dg9ttRjALo8L7JFh", "name": "Google Sheets account 4" } }
+    },
+    {
+      "parameters": {},
+      "id": "f0000001-aaaa-bbbb-cccc-000000000007",
+      "name": "Not in Sheet",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [900, -200]
+    },
+
+    {
+      "parameters": {
+        "mailbox": "INBOX",
+        "postProcessAction": "read",
+        "options": { "allowUnauthorizedCerts": true }
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000010",
+      "name": "Reply Received",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [-600, 250],
+      "credentials": { "imap": { "id": "SHAREIDE_IMAP_001", "name": "ShareIDE IMAP" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = [];\nfor (const item of $input.all()) {\n  const fromRaw = item.json.from?.text || item.json.from || '';\n  const emailRegex = /[\\w.+-]+@[\\w.-]+\\.[a-zA-Z]{2,}/g;\n  const fromEmails = fromRaw.match(emailRegex) || [];\n  for (const email of fromEmails) {\n    results.push({ json: { from_email: email.toLowerCase().trim() } });\n  }\n}\nreturn results;"
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000011",
+      "name": "Extract Reply Sender",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-300, 250]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": { "__rl": true, "value": "18yisXx5I2xmdFvxe_RjeNf1etsIRIKj0Edt6yrYV9t4", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "Follow-up Tracker", "mode": "name" },
+        "options": {}
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000012",
+      "name": "Read Tracker for Reply",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [0, 250],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "Dg9ttRjALo8L7JFh", "name": "Google Sheets account 4" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const sender = $('Extract Reply Sender').first().json;\nconst trackerRows = $('Read Tracker for Reply').all();\nlet found = false;\nlet email = sender.from_email;\nfor (const row of trackerRows) {\n  if (row.json['Email'] && row.json['Email'].toLowerCase().trim() === email && row.json['Reply Status'] !== 'Yes') {\n    found = true; break;\n  }\n}\nreturn [{ json: { found, email } }];"
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000013",
+      "name": "Check if Tracked",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [300, 250]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "id": "tracked-check", "leftValue": "={{ $json.found }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals", "name": "filter.boolean.equals" } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000014",
+      "name": "Is Tracked?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [550, 250]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": { "__rl": true, "value": "18yisXx5I2xmdFvxe_RjeNf1etsIRIKj0Edt6yrYV9t4", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "Follow-up Tracker", "mode": "name" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": { "Email": "={{ $json.email }}", "Reply Status": "Yes" },
+          "matchingColumns": ["Email"],
+          "schema": [
+            {"id": "Email", "displayName": "Email", "required": false, "defaultMatch": true, "display": true, "type": "string", "canBeUsedToMatch": true},
+            {"id": "Reply Status", "displayName": "Reply Status", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false}
+          ]
+        },
+        "options": {}
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000015",
+      "name": "Mark Replied",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [800, 150],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "Dg9ttRjALo8L7JFh", "name": "Google Sheets account 4" } }
+    },
+    {
+      "parameters": {},
+      "id": "f0000001-aaaa-bbbb-cccc-000000000016",
+      "name": "Not Tracked",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [800, 350]
+    },
+
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "days", "daysInterval": 1, "triggerAtHour": 4 }] }
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000020",
+      "name": "Daily 9AM PKT",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-600, 600]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": { "__rl": true, "value": "18yisXx5I2xmdFvxe_RjeNf1etsIRIKj0Edt6yrYV9t4", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "Follow-up Tracker", "mode": "name" },
+        "options": {}
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000021",
+      "name": "Read Tracker",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [-300, 600],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "Dg9ttRjALo8L7JFh", "name": "Google Sheets account 4" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const now = new Date();\nconst results = [];\nfor (const item of $input.all()) {\n  const row = item.json;\n  if (row['Reply Status'] === 'Yes' || row['Status'] === 'Stopped' || row['Status'] === 'Yes') continue;\n  const lastDate = row['Last Follow-up Date'] || row['Sent Date'];\n  if (!lastDate) continue;\n  const last = new Date(lastDate);\n  const diffDays = Math.floor((now - last) / (1000 * 60 * 60 * 24));\n  if (diffDays >= 2) {\n    const count = parseInt(row['Follow-up Count'] || '0') + 1;\n    results.push({ json: {\n      email: row['Email'], contact_name: row['Contact Name'] || '',\n      company: row['Company'] || '', original_subject: row['Subject'] || '',\n      original_body: row['Body Preview'] || '',\n      follow_up_count: count, today: now.toISOString().split('T')[0]\n    }});\n  }\n}\nif (results.length === 0) return [{ json: { email: null } }];\nreturn results;"
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000022",
+      "name": "Filter Due Follow-ups",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [0, 600]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "id": "has-email", "leftValue": "={{ $json.email }}", "rightValue": "", "operator": { "type": "string", "operation": "exists", "name": "filter.string.exists" } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000023",
+      "name": "Any Due?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [300, 600],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst count = item.follow_up_count;\nconst name = item.contact_name;\nconst company = item.company;\nconst originalSubject = item.original_subject;\nconst firstName = name.split(' ')[0] || 'there';\nconst originalBody = item.original_body || '';\n\nlet tone = '';\nif (count === 1) tone = 'TONE: Gentle first reminder. Mention you sent an email recently. Ask if they had a chance to review it. Suggest a quick 15-min call.';\nelse if (count === 2) tone = 'TONE: More persuasive second follow-up. Highlight 2-3 specific benefits from original email. Create urgency. Mention how similar companies benefited.';\nelse if (count === 3) tone = 'TONE: Understanding third follow-up. Acknowledge they are busy. Say you do not want to be a nuisance. Offer to stop if not interested. Give one last compelling reason.';\nelse tone = 'TONE: Final brief follow-up. Very short (3-4 sentences max). Ask if there is a better person to contact. Offer to reconnect in future.';\n\nconst prompt = 'Write follow-up email #' + count + ' for ShareIDE company.\\n\\nRECIPIENT: ' + firstName + ' at ' + (company || 'their organization') + '\\nORIGINAL EMAIL SUBJECT: ' + originalSubject + '\\nORIGINAL EMAIL CONTENT: ' + originalBody.replace(/[\\n\\r]/g, ' ').substring(0, 400) + '\\n\\n' + tone + '\\n\\nIMPORTANT RULES:\\n- This is follow-up #' + count + ' - it MUST be completely different from a first follow-up\\n- Start with: Dear ' + firstName + ',\\n- End with: Best regards, ShareIDE Team, hr@shareide.com\\n- Max 120 words\\n- No subject line, only email body\\n- Reference the original email context\\n- Sound human and natural\\n\\nWrite ONLY the email body:';\n\nreturn [{ json: { prompt, to_email: item.email, original_subject: originalSubject, follow_up_count: count.toString(), today: item.today, email_for_update: item.email } }];"
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000024",
+      "name": "Prepare AI Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [550, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "const promptData = $input.first().json;\nconst prompt = promptData.prompt;\n\nconst data = await this.helpers.httpRequest({\n  method: 'POST',\n  url: 'https://api.groq.com/openai/v1/chat/completions',\n  body: {model:'llama-3.3-70b-versatile',messages:[{role:'user',content:prompt}],max_tokens:500,temperature:0.7},\n  headers: {'Content-Type':'application/json','Authorization':'Bearer YOUR_GROQ_API_KEY_HERE'}\n});\n\nlet body = '';\ntry {\n  body = data.choices[0].message.content || '';\n} catch(e) {\n  body = 'Dear ' + (promptData.to_email.split('@')[0]) + ',\\n\\nI wanted to follow up on my previous email regarding ' + promptData.original_subject + '. I would appreciate the opportunity to discuss this further.\\n\\nBest regards,\\nShareIDE Team\\nhr@shareide.com';\n}\n\nconst subject = 'Re: ' + promptData.original_subject;\n\nreturn [{ json: {\n  to_email: promptData.to_email,\n  subject: subject,\n  body: body.trim(),\n  follow_up_count: promptData.follow_up_count,\n  today: promptData.today,\n  email_for_update: promptData.email_for_update\n}}];"
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000040",
+      "name": "Gemini AI + Extract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 500]
+    },
+    {
+      "parameters": {
+        "fromEmail": "hr@shareide.com",
+        "toEmail": "={{ $json.to_email }}",
+        "subject": "={{ $json.subject }}",
+        "emailType": "html",
+        "html": "={{ $json.body.replace(/\\n/g, '<br>') }}",
+        "options": { "appendAttribution": false }
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000025",
+      "name": "Send Follow-up",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1300, 500],
+      "credentials": { "smtp": { "id": "SHAREIDE_SMTP_001", "name": "ShareIDE SMTP" } }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": { "__rl": true, "value": "18yisXx5I2xmdFvxe_RjeNf1etsIRIKj0Edt6yrYV9t4", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "Follow-up Tracker", "mode": "name" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Email": "={{ $('Gemini AI + Extract').item.json.email_for_update }}",
+            "Follow-up Count": "={{ $('Gemini AI + Extract').item.json.follow_up_count }}",
+            "Last Follow-up Date": "={{ $('Gemini AI + Extract').item.json.today }}"
+          },
+          "matchingColumns": ["Email"],
+          "schema": [
+            {"id": "Email", "displayName": "Email", "required": false, "defaultMatch": true, "display": true, "type": "string", "canBeUsedToMatch": true},
+            {"id": "Follow-up Count", "displayName": "Follow-up Count", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false},
+            {"id": "Last Follow-up Date", "displayName": "Last Follow-up Date", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false}
+          ]
+        },
+        "options": {}
+      },
+      "id": "f0000001-aaaa-bbbb-cccc-000000000026",
+      "name": "Update Tracker",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1550, 500],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "Dg9ttRjALo8L7JFh", "name": "Google Sheets account 4" } }
+    },
+    {
+      "parameters": {},
+      "id": "f0000001-aaaa-bbbb-cccc-000000000027",
+      "name": "Nothing Due",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [550, 700]
+    }
+  ],
+  "connections": {
+    "Check Every 2 Min": { "main": [[{"node": "Check Sent Folder", "type": "main", "index": 0}]] },
+    "Check Sent Folder": { "main": [[{"node": "Extract Sent Details", "type": "main", "index": 0}]] },
+    "Extract Sent Details": { "main": [[{"node": "Read All Tabs", "type": "main", "index": 0}]] },
+    "Read All Tabs": { "main": [[{"node": "Match All Tabs", "type": "main", "index": 0}]] },
+    "Match All Tabs": { "main": [[{"node": "In Sheet?", "type": "main", "index": 0}]] },
+    "In Sheet?": { "main": [
+      [{"node": "Add to Tracker", "type": "main", "index": 0}],
+      [{"node": "Not in Sheet", "type": "main", "index": 0}]
+    ]},
+
+    "Reply Received": { "main": [[{"node": "Extract Reply Sender", "type": "main", "index": 0}]] },
+    "Extract Reply Sender": { "main": [[{"node": "Read Tracker for Reply", "type": "main", "index": 0}]] },
+    "Read Tracker for Reply": { "main": [[{"node": "Check if Tracked", "type": "main", "index": 0}]] },
+    "Check if Tracked": { "main": [[{"node": "Is Tracked?", "type": "main", "index": 0}]] },
+    "Is Tracked?": { "main": [
+      [{"node": "Mark Replied", "type": "main", "index": 0}],
+      [{"node": "Not Tracked", "type": "main", "index": 0}]
+    ]},
+
+    "Daily 9AM PKT": { "main": [[{"node": "Read Tracker", "type": "main", "index": 0}]] },
+    "Read Tracker": { "main": [[{"node": "Filter Due Follow-ups", "type": "main", "index": 0}]] },
+    "Filter Due Follow-ups": { "main": [[{"node": "Any Due?", "type": "main", "index": 0}]] },
+    "Any Due?": { "main": [
+      [{"node": "Prepare AI Prompt", "type": "main", "index": 0}],
+      [{"node": "Nothing Due", "type": "main", "index": 0}]
+    ]},
+    "Prepare AI Prompt": { "main": [[{"node": "Gemini AI + Extract", "type": "main", "index": 0}]] },
+    "Gemini AI + Extract": { "main": [[{"node": "Send Follow-up", "type": "main", "index": 0}]] },
+    "Send Follow-up": { "main": [[{"node": "Update Tracker", "type": "main", "index": 0}]] }
+  },
+  "active": false,
+  "settings": {"executionOrder": "v1"},
+  "tags": []
+}
